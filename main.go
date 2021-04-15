@@ -1,49 +1,114 @@
-package main
+package aws
 
 import (
-	"context"
-	"flag"
+	"fmt"
 	"log"
 
-	"github.com/hashicorp/terraform-plugin-sdk/v2/plugin"
-	"github.com/hashicorp/terraform-provider-scaffolding/internal/provider"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ssm"
+
+	"github.com/hashicorp/terraform-plugin-sdk/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 )
 
-// Run "go generate" to format example terraform files and generate the docs for the registry/website
+func dataSourceAwsSsmParametersByPath() *schema.Resource {
+	return &schema.Resource{
+		Read: dataSourceAwsSsmParametersReadByPath,
 
-// If you do not have terraform installed, you can remove the formatting command, but its suggested to
-// ensure the documentation is formatted properly.
-//go:generate terraform fmt -recursive ./examples/
+		Schema: map[string]*schema.Schema{
+			"path": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			"arns": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"names": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"types": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"values": {
+				Type:      schema.TypeList,
+				Computed:  true,
+				Sensitive: true,
+				Elem:      &schema.Schema{Type: schema.TypeString},
+			},
+			"with_decryption": {
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  true,
+			},
+		},
+	}
+}
 
-// Run the docs generation tool, check its repository for more information on how it works and how docs
-// can be customized.
-//go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs
+func dataSourceAwsSsmParametersReadByPath(d *schema.ResourceData, meta interface{}) error {
+	ssmconn := meta.(*AWSClient).ssmconn
 
-var (
-	// these will be set by the goreleaser configuration
-	// to appropriate values for the compiled binary
-	version string = "dev"
+	path := d.Get("path").(string)
 
-	// goreleaser can also pass the specific commit if you want
-	// commit  string = ""
-)
+	arns := make([]string, 0)
+	names := make([]string, 0)
+	types := make([]string, 0)
+	values := make([]string, 0)
 
-func main() {
-	var debugMode bool
-
-	flag.BoolVar(&debugMode, "debug", false, "set to true to run the provider with support for debuggers like delve")
-	flag.Parse()
-
-	opts := &plugin.ServeOpts{ProviderFunc: provider.New(version)}
-
-	if debugMode {
-		// TODO: update this string with the full name of your provider as used in your configs
-		err := plugin.Debug(context.Background(), "registry.terraform.io/hashicorp/scaffolding", opts)
-		if err != nil {
-			log.Fatal(err.Error())
+	for {
+		paramInput := &ssm.GetParametersByPathInput{
+			Path:           aws.String(path),
+			WithDecryption: aws.Bool(d.Get("with_decryption").(bool)),
 		}
-		return
+
+		log.Printf("[DEBUG] Reading SSM Parameters by path: %s", paramInput)
+		resp, err := ssmconn.GetParametersByPath(paramInput)
+
+		if err != nil {
+			return fmt.Errorf("Error reading SSM parameters by path: %s", err)
+		}
+
+		params := resp.Parameters
+
+		for _, param := range params {
+			arns = append(arns, *param.ARN)
+			names = append(names, *param.Name)
+			types = append(types, *param.Type)
+			values = append(values, *param.Value)
+		}
+
+		if resp.NextToken == nil {
+			break
+		}
+		paramInput.NextToken = resp.NextToken
 	}
 
-	plugin.Serve(opts)
+	d.SetId(resource.UniqueId())
+
+	err := d.Set("arns", arns)
+	if err != nil {
+		return err
+	}
+
+	err = d.Set("names", names)
+	if err != nil {
+		return err
+	}
+
+	err = d.Set("types", types)
+	if err != nil {
+		return err
+	}
+
+	err = d.Set("values", values)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
