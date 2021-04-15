@@ -1,0 +1,1 @@
+# terraform-provider-aws_ssm_parameters_by_path
